@@ -1,13 +1,24 @@
-/config
-ip2net/ip2net
-mdig/mdig
-nfq/dvtws
-nfq/nfqws
-nfq/winws.exe
-nfq/WinDivert*
-tpws/tpws
-binaries/my/
-ipset/zapret-ip*.txt
-ipset/zapret-ip*.gz
-ipset/zapret-hosts*.txt
-ipset/zapret-hosts*.gz
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+venv/
+.venv/
+
+# Database (Critical - contains local strategies)
+strategies.db
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
