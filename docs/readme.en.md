@@ -103,11 +103,16 @@ Stop guessing. See exactly what your system is bypassing.
 
 ## 🕵️ Proactive Intelligence
 
-Why wait until a site is blocked? The system proactively fetches known blocked domains.
+Why wait until a site is blocked? The system proactively fetches known blocked domains from global and regional sources.
 
 ```bash
-# Manually trigger the scraper
-python3 intelligence/btk_scraper.py
+# Fetch Global Blocklist (Default)
+python3 intelligence/blocklist_manager.py --region=global
+
+# Fetch Regional Lists (e.g., Turkey, Russia, Iran)
+python3 intelligence/blocklist_manager.py --region=tr
+python3 intelligence/blocklist_manager.py --region=ru
+python3 intelligence/blocklist_manager.py --region=all
 ```
 *Auto-runs daily via Sentinel.*
 
