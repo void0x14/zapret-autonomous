@@ -27,7 +27,7 @@
 |:----------------------------|:-----------------------|
 | 🤯 Editing config files manually | 🤖 **Zero Configuration** (Auto-Detects everything) |
 | 🐢 "Connection Reset" -> Wait -> Retry | 🚀 **Parallel Probing** (<5s resolution) |
-| 📜 Manual DPI strategy updates | 🕵️ **BTK Scraper** (Proactive Intelligence) |
+| 📜 Manual DPI strategy updates | 🕵️ **Global Intelligence** (Proactive Blocklists) |
 | 🤷‍♂️ "Is it working?" (Guesswork) | 📊 **Telemetry CLI** (Real-time Stats) |
 | 💀 System updates break packet filters | ❤️ **Self-Healing Sentinel** (Auto-Repair) |
 
@@ -65,7 +65,7 @@ Zapret Autonomous isn't just a script; it's a **cybernetic organism**. It combin
 
 ### 🧠 The Brain (Control Plane - Python)
 - **Parallel Prober:** Spawns 5 concurrent threads to "attack" a blocked domain with different strategies (Fake, Split, Disorder).
-- **Intelligence:** Scrapes BTK, USOM, and GitHub blocklists daily.
+- **Intelligence:** Scrapes Global (CitizenLab), RU, IR, and TR blocklists daily.
 - **Sentinel:** Monitors kernel version, dependencies, and service health.
 - **Telemetry:** Logs metrics to a local SQLite database.
 
