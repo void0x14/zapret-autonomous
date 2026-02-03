@@ -91,8 +91,9 @@ class UniversalBootstrapper:
     
     def setup_service(self):
         """Create systemd service for auto-start."""
-        logging.info("Setting up systemd service...")
+        logging.info("Setting up systemd services...")
         
+        # Main service
         service_content = f"""[Unit]
 Description=Zapret Autonomous Anti-Censorship Service
 After=network.target
@@ -107,24 +108,43 @@ RestartSec=10
 WantedBy=multi-user.target
 """
         
-        service_path = '/etc/systemd/system/zapret-autonomous.service'
+        # Sentinel service
+        sentinel_content = f"""[Unit]
+Description=Zapret Sentinel (Self-Healing Watchdog)
+After=network.target zapret-autonomous.service
+
+[Service]
+Type=simple
+ExecStart={sys.executable} {os.path.abspath('sentinel.py')}
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+"""
         
         try:
-            with open(service_path, 'w') as f:
+            # Install main service
+            with open('/etc/systemd/system/zapret-autonomous.service', 'w') as f:
                 f.write(service_content)
+            
+            # Install sentinel service
+            with open('/etc/systemd/system/zapret-sentinel.service', 'w') as f:
+                f.write(sentinel_content)
             
             import subprocess
             subprocess.run(['systemctl', 'daemon-reload'], check=True)
             subprocess.run(['systemctl', 'enable', 'zapret-autonomous'], check=True)
+            subprocess.run(['systemctl', 'enable', 'zapret-sentinel'], check=True)
             
-            logging.info("✓ Service installed and enabled")
+            logging.info("✓ Services installed and enabled")
             self.sensei.log_action(
-                action="Created systemd service",
-                reason="Ensures Zapret starts automatically on boot and restarts if it crashes",
+                action="Created systemd services (main + sentinel)",
+                reason="Ensures Zapret starts automatically on boot and the Sentinel monitors system health",
                 learn_more="systemd is the init system used by most modern Linux distributions"
             )
         except Exception as e:
-            logging.warning(f"Could not setup service: {e}")
+            logging.warning(f"Could not setup services: {e}")
     
     def run(self):
         """Main installation workflow."""

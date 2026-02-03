@@ -1,0 +1,12 @@
+[Unit]
+Description=Zapret Sentinel (Self-Healing Watchdog)
+After=network.target zapret-autonomous.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/void0x14/Belgeler/Vibe-coding/zapret-autonomous/sentinel.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
