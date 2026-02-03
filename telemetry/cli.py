@@ -4,7 +4,12 @@ Zapret Stats - CLI Viewer
 Professional text-based statistics dashboard
 """
 import sys
+import os
 import argparse
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from telemetry.stats_tracker import StatsTracker
 
 def format_header(title: str) -> str:
