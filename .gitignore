@@ -14,6 +14,10 @@ strategies.db
 
 # Logs
 *.log
+learn_log.md
+
+# Private docs
+docs/private/
 
 # OS
 .DS_Store
