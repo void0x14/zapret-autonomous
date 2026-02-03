@@ -1,0 +1,19 @@
+# Fallback Blocked Domains (Manual Curated List)
+# Format: one domain per line
+
+# Social Media
+twitter.com
+x.com
+instagram.com
+facebook.com
+
+# News
+wikipedia.org
+wikimedia.org
+
+# Video
+youtube.com (sometimes throttled)
+
+# Other
+discord.com
+tumblr.com

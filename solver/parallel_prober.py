@@ -5,17 +5,20 @@ import time
 import requests
 from typing import Optional
 from .heuristics import STRATEGIES, PRIORITY_LIST
+from telemetry.stats_tracker import StatsTracker
 
 # Timeout for each probe (aggressive)
 PROBE_TIMEOUT = 3.0 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 class ParallelProber:
-    def __init__(self, target_domain: str):
+    def __init__(self, target_domain: str, enable_telemetry: bool = True):
         self.target_domain = target_domain
         self.stop_event = threading.Event()
         self.winner_strategy = None
         self.lock = threading.Lock()
+        self.enable_telemetry = enable_telemetry
+        self.tracker = StatsTracker() if enable_telemetry else None
 
     def _test_strategy(self, strategy_key: str):
         """
@@ -84,4 +87,12 @@ class ParallelProber:
         
         total_time = time.time() - start
         logging.info(f"Probe finished in {total_time:.2f}s. Winner: {self.winner_strategy}")
+        
+        # Log telemetry
+        if self.enable_telemetry and self.tracker:
+            success = self.winner_strategy is not None
+            strategy = self.winner_strategy or "none"
+            latency_ms = int(total_time * 1000)
+            self.tracker.log_bypass(self.target_domain, strategy, success, latency_ms)
+        
         return self.winner_strategy
