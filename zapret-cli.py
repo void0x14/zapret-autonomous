@@ -2,14 +2,14 @@
 """
 Zapret CLI - Simple command-line interface for DPI bypass
 Usage:
-    sudo python3 zapret-cli.py turbo.cr jpg6.su        # Bypass & daemonize
+    sudo python3 zapret-cli.py turbo.cr jpg6.su        # Bypass (auto-detect)
+    sudo python3 zapret-cli.py -f turbo.cr             # Fresh probe
     sudo python3 zapret-cli.py status
     sudo python3 zapret-cli.py stop
 """
 import sys
 import os
 import logging
-import argparse
 import subprocess
 
 # Setup logging
@@ -23,6 +23,10 @@ def check_root():
         print("❌ This tool requires root privileges.")
         print("   Run: sudo python3 zapret-cli.py <command>")
         sys.exit(1)
+
+def is_domain(arg: str) -> bool:
+    """Check if argument looks like a domain name."""
+    return '.' in arg and not arg.startswith('-') and arg not in ['status', 'stop', 'test', 'clear', 'bypass']
 
 def cmd_bypass(domains: list, fresh: bool = False):
     """Find working strategy and apply bypass for given domains."""
@@ -38,8 +42,6 @@ def cmd_bypass(domains: list, fresh: bool = False):
         print("[FRESH] Clearing cached strategies and re-probing...")
         for domain in domains:
             db.delete_strategy(domain)
-    
-    final_strategy = None
     
     for domain in domains:
         print(f"\n{'='*50}")
@@ -64,8 +66,6 @@ def cmd_bypass(domains: list, fresh: bool = False):
                 print(f"[FAIL] No working strategy found for {domain}")
                 continue
         
-        final_strategy = strategy
-        
         # Apply the strategy
         print(f"[APPLY] Activating bypass with strategy: {strategy}")
         if applicator.apply(strategy):
@@ -79,20 +79,14 @@ def cmd_bypass(domains: list, fresh: bool = False):
     
     print(f"\n{'='*50}")
     print("  ✓ Bypass is now ACTIVE!")
-    print("  Terminal will be released. nfqws runs in background.")
+    print("  nfqws runs in background. Terminal released.")
     print(f"{'='*50}")
     print("\nCommands:")
     print("  sudo python3 zapret-cli.py status  - Check status")
     print("  sudo python3 zapret-cli.py stop    - Stop bypass")
-    
-    # DON'T block terminal! Just detach and exit.
-    # The nfqws process is already running in background via Popen
 
 def cmd_status():
     """Show current bypass status."""
-    from core.db import StrategyDB
-    import subprocess
-    
     print(f"\n{'='*50}")
     print("  ZAPRET AUTONOMOUS - STATUS")
     print(f"{'='*50}")
@@ -127,6 +121,8 @@ def cmd_status():
         rows = cursor.fetchall()
         for domain, strategy in rows:
             print(f"    - {domain}: {strategy}")
+        if not rows:
+            print("    (none)")
         conn.close()
     except:
         print("    (none)")
@@ -135,8 +131,6 @@ def cmd_status():
 
 def cmd_stop():
     """Stop running bypass."""
-    import subprocess
-    
     print("[STOP] Stopping nfqws processes...")
     
     # Kill all nfqws processes
@@ -164,6 +158,8 @@ def cmd_stop():
 def cmd_test(domains: list):
     """Test if domains are accessible (without bypass)."""
     import requests
+    import urllib3
+    urllib3.disable_warnings()
     
     for domain in domains:
         try:
@@ -173,82 +169,84 @@ def cmd_test(domains: list):
         except requests.exceptions.Timeout:
             print(f"✗ {domain}: TIMEOUT - Likely blocked")
         except requests.exceptions.SSLError as e:
-            print(f"✗ {domain}: SSL Error - {e}")
-        except requests.exceptions.ConnectionError as e:
+            print(f"✗ {domain}: SSL Error - Possibly blocked")
+        except requests.exceptions.ConnectionError:
             print(f"✗ {domain}: Connection Error - Blocked or down")
         except Exception as e:
             print(f"? {domain}: {e}")
 
 def cmd_clear():
     """Clear all saved strategies from database."""
-    import os
     try:
         os.remove('strategies.db')
         print("✓ Strategy database cleared")
     except FileNotFoundError:
         print("Database already empty")
 
-def is_domain(arg: str) -> bool:
-    """Check if argument looks like a domain name."""
-    return '.' in arg and not arg.startswith('-')
-
 def main():
-    # Smart argument handling: if first arg looks like a domain, assume 'bypass'
-    if len(sys.argv) > 1 and is_domain(sys.argv[1]):
-        sys.argv.insert(1, 'bypass')
+    args = sys.argv[1:]
     
-    parser = argparse.ArgumentParser(
-        description='Zapret Autonomous - DPI Bypass Tool',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+    if not args:
+        print("""
+Zapret Autonomous - DPI Bypass Tool
+
+Usage:
+  sudo python3 zapret-cli.py DOMAIN [DOMAIN...]     Bypass domains
+  sudo python3 zapret-cli.py -f DOMAIN [DOMAIN...]  Bypass with fresh probe
+  sudo python3 zapret-cli.py status                 Show status
+  sudo python3 zapret-cli.py stop                   Stop bypass
+  sudo python3 zapret-cli.py test DOMAIN            Test accessibility
+  sudo python3 zapret-cli.py clear                  Clear saved strategies
+
 Examples:
-  sudo python3 zapret-cli.py twitter.com youtube.com   # Bypass (detached)
-  sudo python3 zapret-cli.py bypass --fresh site.com   # Re-probe strategies
+  sudo python3 zapret-cli.py turbo.cr jpg6.su
+  sudo python3 zapret-cli.py -f twitter.com
   sudo python3 zapret-cli.py status
-  sudo python3 zapret-cli.py stop
-  python3 zapret-cli.py test twitter.com
-  sudo python3 zapret-cli.py clear                     # Clear saved strategies
-        """
-    )
+""")
+        sys.exit(0)
     
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    # Handle commands
+    cmd = args[0]
     
-    # bypass command
-    bypass_parser = subparsers.add_parser('bypass', help='Find and apply bypass for domains')
-    bypass_parser.add_argument('domains', nargs='+', help='Domains to bypass')
-    bypass_parser.add_argument('--fresh', '-f', action='store_true', help='Ignore cache and re-probe strategies')
-    
-    # status command
-    subparsers.add_parser('status', help='Show current bypass status')
-    
-    # stop command
-    subparsers.add_parser('stop', help='Stop running bypass')
-    
-    # test command
-    test_parser = subparsers.add_parser('test', help='Test if domains are accessible')
-    test_parser.add_argument('domains', nargs='+', help='Domains to test')
-    
-    # clear command
-    subparsers.add_parser('clear', help='Clear saved strategy database')
-    
-    args = parser.parse_args()
-    
-    if not args.command:
-        parser.print_help()
-        sys.exit(1)
-    
-    if args.command == 'test':
-        cmd_test(args.domains)
-    elif args.command == 'clear':
-        cmd_clear()
-    elif args.command in ['bypass', 'status', 'stop']:
+    if cmd == 'status':
         check_root()
-        if args.command == 'bypass':
-            cmd_bypass(args.domains, fresh=args.fresh)
-        elif args.command == 'status':
-            cmd_status()
-        elif args.command == 'stop':
-            cmd_stop()
+        cmd_status()
+    elif cmd == 'stop':
+        check_root()
+        cmd_stop()
+    elif cmd == 'clear':
+        cmd_clear()
+    elif cmd == 'test':
+        if len(args) < 2:
+            print("Usage: python3 zapret-cli.py test DOMAIN")
+            sys.exit(1)
+        cmd_test(args[1:])
+    elif cmd == '-f' or cmd == '--fresh':
+        # Fresh mode: -f domain1 domain2
+        check_root()
+        domains = [a for a in args[1:] if is_domain(a)]
+        if not domains:
+            print("Usage: sudo python3 zapret-cli.py -f DOMAIN [DOMAIN...]")
+            sys.exit(1)
+        cmd_bypass(domains, fresh=True)
+    elif cmd == 'bypass':
+        # Explicit bypass command
+        check_root()
+        fresh = '-f' in args or '--fresh' in args
+        domains = [a for a in args[1:] if is_domain(a)]
+        if not domains:
+            print("Usage: sudo python3 zapret-cli.py bypass DOMAIN [DOMAIN...]")
+            sys.exit(1)
+        cmd_bypass(domains, fresh=fresh)
+    elif is_domain(cmd):
+        # Auto-detect: first arg is domain
+        check_root()
+        domains = [a for a in args if is_domain(a)]
+        cmd_bypass(domains, fresh=False)
+    else:
+        print(f"Unknown command: {cmd}")
+        print("Run without arguments for help.")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
