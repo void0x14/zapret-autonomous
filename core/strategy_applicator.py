@@ -8,6 +8,9 @@ import logging
 import os
 import signal
 import atexit
+import shlex
+import socket
+import requests
 from typing import Optional, List
 from solver.heuristics import STRATEGIES
 
@@ -19,180 +22,141 @@ class StrategyApplicator:
     """Manages iptables rules and nfqws process for actual DPI bypass."""
     
     def __init__(self):
-        self.nfqws_process: Optional[subprocess.Popen] = None
-        self.active_strategy: Optional[str] = None
-        self.rules_applied = False
+        self.current_process = None
+        self.applied_rules = []
+        # Cleanup on exit
+        atexit.register(self.stop)
+    
+    def apply(self, strategy_key: str, domains: List[str]) -> bool:
+        """Apply a specific strategy for the given domains."""
+        self.stop()  # Clean up existing
         
-        # Register cleanup on exit
-        atexit.register(self.cleanup)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        logging.info("Signal received, cleaning up...")
-        self.cleanup()
-    
-    def _run_cmd(self, cmd: List[str], check: bool = True) -> bool:
-        """Run a shell command."""
-        try:
-            logging.debug(f"Running: {' '.join(cmd)}")
-            subprocess.run(cmd, check=check, capture_output=True, text=True)
-            return True
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Command failed: {' '.join(cmd)}\n{e.stderr}")
+        logging.info(f"Applying strategy: {strategy_key} for {len(domains)} domains")
+        
+        if not self._apply_iptables(domains):
+            logging.error("Failed to apply iptables rules")
             return False
-    
-    def _add_iptables_rules(self, ports: List[int] = [80, 443]) -> bool:
-        """Add iptables mangle rules to redirect traffic to NFQUEUE."""
-        logging.info("Adding iptables rules for NFQUEUE...")
-        
-        ports_str = ','.join(map(str, ports))
-        
-        # TCP rule for HTTP/HTTPS (based on official zapret docs)
-        tcp_rule = [
-            'iptables', '-t', 'mangle', '-I', 'POSTROUTING',
-            '-p', 'tcp', '-m', 'multiport', '--dports', ports_str,
-            '-m', 'connbytes', '--connbytes-dir=original', '--connbytes-mode=packets', '--connbytes', '1:6',
-            '-m', 'mark', '!', '--mark', '0x40000000/0x40000000',
-            '-j', 'NFQUEUE', '--queue-num', str(NFQUEUE_NUM), '--queue-bypass'
-        ]
-        
-        # UDP rule for QUIC (port 443)
-        udp_rule = [
-            'iptables', '-t', 'mangle', '-I', 'POSTROUTING',
-            '-p', 'udp', '--dport', '443',
-            '-m', 'mark', '!', '--mark', '0x40000000/0x40000000',
-            '-j', 'NFQUEUE', '--queue-num', str(NFQUEUE_NUM), '--queue-bypass'
-        ]
-        
-        success = self._run_cmd(tcp_rule) and self._run_cmd(udp_rule)
-        if success:
-            self.rules_applied = True
-            logging.info("✓ IPTables rules applied")
-        return success
-    
-    def _remove_iptables_rules(self) -> bool:
-        """Remove the NFQUEUE rules we added."""
-        if not self.rules_applied:
-            return True
             
-        logging.info("Removing iptables rules...")
-        
-        # Delete TCP rule
-        tcp_del = [
-            'iptables', '-t', 'mangle', '-D', 'POSTROUTING',
-            '-p', 'tcp', '-m', 'multiport', '--dports', '80,443',
-            '-m', 'connbytes', '--connbytes-dir=original', '--connbytes-mode=packets', '--connbytes', '1:6',
-            '-m', 'mark', '!', '--mark', '0x40000000/0x40000000',
-            '-j', 'NFQUEUE', '--queue-num', str(NFQUEUE_NUM), '--queue-bypass'
-        ]
-        
-        # Delete UDP rule
-        udp_del = [
-            'iptables', '-t', 'mangle', '-D', 'POSTROUTING',
-            '-p', 'udp', '--dport', '443',
-            '-m', 'mark', '!', '--mark', '0x40000000/0x40000000',
-            '-j', 'NFQUEUE', '--queue-num', str(NFQUEUE_NUM), '--queue-bypass'
-        ]
-        
-        # Try to delete, ignore errors (rule might not exist)
-        self._run_cmd(tcp_del, check=False)
-        self._run_cmd(udp_del, check=False)
-        self.rules_applied = False
-        logging.info("✓ IPTables rules removed")
+        if not self._start_nfqws(strategy_key):
+            logging.error("Failed to start nfqws")
+            self._cleanup_iptables()
+            return False
+            
         return True
     
+    def stop(self):
+        """Stop current bypass (kill nfqws, remove rules)."""
+        if self.current_process:
+            logging.info("Stopping nfqws...")
+            self.current_process.terminate()
+            try:
+                self.current_process.wait(timeout=2)
+            except:
+                self.current_process.kill()
+            self.current_process = None
+            logging.info("✓ nfqws stopped")
+            
+        self._cleanup_iptables()
+
+    def _cleanup_iptables(self):
+        """Remove all applied iptables rules."""
+        if self.applied_rules:
+            logging.info("Removing iptables rules...")
+            for rule in reversed(self.applied_rules):
+                subprocess.run(['iptables', '-t', 'mangle', '-D'] + rule, capture_output=True)
+            self.applied_rules = []
+            
+            # Flush queue just in case
+            subprocess.run(['iptables', '-t', 'mangle', '-D', 'POSTROUTING', 
+                          '-p', 'tcp', '-m', 'multiport', '--dports', '80,443',
+                          '-m', 'connbytes', '--connbytes-dir=original', '--connbytes-mode=packets', '--connbytes', '1:6',
+                          '-m', 'mark', '!', '--mark', '0x40000000/0x40000000',
+                          '-j', 'NFQUEUE', '--queue-num', str(NFQUEUE_NUM), '--queue-bypass'], 
+                          capture_output=True)
+            logging.info("✓ IPTables rules removed")
+
+    def _resolve_ip(self, domain: str) -> Optional[str]:
+        """Resolve IP with DoH fallback."""
+        try:
+            ip = socket.gethostbyname(domain)
+            if not ip.startswith("0.") and ip != "127.0.0.1":
+                return ip
+        except:
+            pass
+            
+        # DoH Fallback (Cloudflare)
+        try:
+            resp = requests.get(
+                "https://cloudflare-dns.com/dns-query",
+                params={"name": domain, "type": "A"},
+                headers={"Accept": "application/dns-json"},
+                timeout=5, verify=False
+            )
+            for ans in resp.json().get("Answer", []):
+                if ans.get("type") == 1:
+                    return ans.get("data")
+        except:
+            pass
+        return None
+
+    def _apply_iptables(self, domains: List[str]) -> bool:
+        """Apply NFQUEUE rules for target domains."""
+        try:
+            # 1. Genel kural (POSTROUTING)
+            # Bu kural tüm 80/443 trafiğini yakalamaz, sadece OUTPUT kurallarıyla eşleşenleri yakalamak için
+            # Ancak zapret genellikle POSTROUTING'de genel bir hook ister.
+            # Biz spesifik domain çalıştığımız için OUTPUT chain kullanacağız.
+            
+            # Öncelikle nfqws'in kendisine loop yapmasını engellemek için MARK kontrolü ekliyoruz.
+            
+            for domain in domains:
+                # Resolve IP (DoH supported)
+                ip = self._resolve_ip(domain)
+                if not ip:
+                    logging.warning(f"Could not resolve {domain}, skipping iptables rule")
+                    continue
+                
+                logging.info(f"Adding rule for {domain} -> {ip}")
+                
+                # Rule: OUTPUT chain for specific destination IP
+                # -p tcp --dport 443 -d <IP> -j NFQUEUE --queue-num 200
+                rule = [
+                    'OUTPUT',
+                    '-p', 'tcp', '--dport', '443',
+                    '-d', ip,
+                    '-j', 'NFQUEUE', '--queue-num', str(NFQUEUE_NUM), '--queue-bypass'
+                ]
+                
+                subprocess.run(['iptables', '-t', 'mangle', '-I'] + rule, check=True)
+                self.applied_rules.append(rule)
+                
+            return len(self.applied_rules) > 0
+            
+        except subprocess.CalledProcessError as e:
+            logging.error(f"IPTables error: {e}")
+            return False
+
     def _start_nfqws(self, strategy_key: str) -> bool:
         """Start nfqws process with the given strategy."""
-        import shlex
-        
         if strategy_key not in STRATEGIES:
             logging.error(f"Unknown strategy: {strategy_key}")
             return False
-        
-        if not os.path.exists(NFQWS_PATH):
-            logging.error(f"nfqws binary not found at {NFQWS_PATH}")
-            return False
-        
+            
         strategy_cmd = STRATEGIES[strategy_key]["cmd"]
         
         # Build nfqws command - properly parse strategy_cmd with shlex
-        base_cmd = [NFQWS_PATH, f'--qnum={NFQUEUE_NUM}']
-        strategy_args = shlex.split(strategy_cmd)
-        cmd = base_cmd + strategy_args
+        cmd = [NFQWS_PATH, f'--qnum={NFQUEUE_NUM}'] + shlex.split(strategy_cmd)
         
-        logging.info(f"Starting nfqws with strategy '{strategy_key}': {' '.join(cmd)}")
+        logging.info(f"Starting nfqws: {' '.join(cmd)}")
         
         try:
-            # Start detached from terminal so it keeps running
-            self.nfqws_process = subprocess.Popen(
+            self.current_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True  # Detach from terminal
+                start_new_session=True # Detach from terminal
             )
-            self.active_strategy = strategy_key
-            logging.info(f"✓ nfqws started (PID: {self.nfqws_process.pid})")
             return True
         except Exception as e:
             logging.error(f"Failed to start nfqws: {e}")
             return False
-    
-    def _stop_nfqws(self) -> bool:
-        """Stop the nfqws process."""
-        if self.nfqws_process:
-            logging.info("Stopping nfqws...")
-            try:
-                self.nfqws_process.terminate()
-                self.nfqws_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.nfqws_process.kill()
-            self.nfqws_process = None
-            self.active_strategy = None
-            logging.info("✓ nfqws stopped")
-        return True
-    
-    def apply(self, strategy_key: str) -> bool:
-        """Apply a bypass strategy to the system."""
-        logging.info(f"Applying strategy: {strategy_key}")
-        
-        # Stop any existing process
-        self._stop_nfqws()
-        
-        # Add iptables rules (if not already)
-        if not self.rules_applied:
-            if not self._add_iptables_rules():
-                return False
-        
-        # Start nfqws
-        return self._start_nfqws(strategy_key)
-    
-    def is_active(self) -> bool:
-        """Check if bypass is currently active."""
-        if self.nfqws_process:
-            return self.nfqws_process.poll() is None
-        return False
-    
-    def get_status(self) -> dict:
-        """Get current bypass status."""
-        return {
-            "active": self.is_active(),
-            "strategy": self.active_strategy,
-            "nfqws_pid": self.nfqws_process.pid if self.nfqws_process else None,
-            "rules_applied": self.rules_applied
-        }
-    
-    def cleanup(self):
-        """Clean up all resources."""
-        self._stop_nfqws()
-        self._remove_iptables_rules()
-
-
-# Singleton instance
-_applicator: Optional[StrategyApplicator] = None
-
-def get_applicator() -> StrategyApplicator:
-    global _applicator
-    if _applicator is None:
-        _applicator = StrategyApplicator()
-    return _applicator
