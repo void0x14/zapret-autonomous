@@ -20,11 +20,11 @@ logging.basicConfig(
 
 class UniversalBootstrapper:
     SYSTEM_DEPS = {
-        'arch': ['libnetfilter_queue', 'iptables-nft', 'ipset'],
-        'debian': ['libnetfilter-queue-dev', 'libnetfilter-queue1', 'iptables', 'ipset'],
-        'fedora': ['libnetfilter_queue-devel', 'iptables', 'ipset'],
-        'alpine': ['libnetfilter_queue-dev', 'iptables', 'ipset'],
-        'void': ['libnetfilter_queue-devel', 'iptables', 'ipset'],
+        'arch': ['base-devel', 'libnetfilter_queue', 'libmnl', 'zlib', 'libcap', 'iptables-nft', 'ipset'],
+        'debian': ['build-essential', 'libnetfilter-queue-dev', 'libnetfilter-queue1', 'libmnl-dev', 'zlib1g-dev', 'libcap-dev', 'iptables', 'ipset'],
+        'fedora': ['gcc', 'make', 'libnetfilter_queue-devel', 'libmnl-devel', 'zlib-devel', 'libcap-devel', 'iptables', 'ipset'],
+        'alpine': ['build-base', 'libnetfilter_queue-dev', 'libmnl-dev', 'zlib-dev', 'libcap-dev', 'iptables', 'ipset'],
+        'void': ['base-devel', 'libnetfilter_queue-devel', 'libmnl-devel', 'zlib-devel', 'libcap-devel', 'iptables', 'ipset'],
         'slackware': ['libnetfilter_queue', 'iptables', 'ipset']
     }
 
@@ -91,7 +91,11 @@ class UniversalBootstrapper:
                 is_satisfied = True
             elif dep == 'ipset' and shutil.which('ipset'):
                 is_satisfied = True
-            elif 'libnetfilter' in dep:
+            elif dep in ['base-devel', 'build-essential', 'build-base']:
+                # Check for gcc and make
+                if shutil.which('gcc') and shutil.which('make'):
+                    is_satisfied = True
+            elif 'libnetfilter' in dep or 'libmnl' in dep or 'zlib' in dep or 'libcap' in dep:
                 # Keep libraries as they are usually needed for building/linking
                 is_satisfied = False
                 
@@ -164,6 +168,62 @@ class UniversalBootstrapper:
             sys.exit(1)
         except Exception as e:
             logging.error(f"Unexpected error installing Python deps: {e}")
+    
+    def compile_nfqws(self):
+        """Compile nfqws from source and install to /usr/bin."""
+        import subprocess
+        
+        # Check if already installed
+        if shutil.which('nfqws'):
+            logging.info("✓ nfqws binary already installed")
+            return
+        
+        logging.info("Compiling nfqws from source...")
+        
+        # Check if nfq directory exists
+        nfq_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nfq')
+        if not os.path.exists(nfq_dir):
+            logging.error("nfq source directory not found!")
+            sys.exit(1)
+        
+        try:
+            # Clean and compile
+            subprocess.run(['make', 'clean'], cwd=nfq_dir, capture_output=True)
+            result = subprocess.run(['make'], cwd=nfq_dir, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logging.error(f"Compilation failed: {result.stderr}")
+                sys.exit(1)
+            
+            # Find compiled binary
+            binaries_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binaries', 'my')
+            nfqws_path = os.path.join(binaries_dir, 'nfqws')
+            
+            # Also check directly in nfq folder
+            if not os.path.exists(nfqws_path):
+                nfqws_path = os.path.join(nfq_dir, 'nfqws')
+            
+            if not os.path.exists(nfqws_path):
+                logging.error("nfqws binary not found after compilation!")
+                logging.error("Try running manually: cd nfq && make")
+                sys.exit(1)
+            
+            # Install to /usr/bin
+            target_path = '/usr/bin/nfqws'
+            shutil.copy2(nfqws_path, target_path)
+            os.chmod(target_path, 0o755)
+            
+            logging.info(f"✓ nfqws installed to {target_path}")
+            self.sensei.log_action(
+                action="Compiled and installed nfqws binary",
+                reason="Required for packet manipulation and DPI bypass",
+                learn_more="nfqws uses NFQUEUE to intercept and modify packets"
+            )
+        except FileNotFoundError:
+            logging.error("'make' not found. Install build tools first.")
+            sys.exit(1)
+        except Exception as e:
+            logging.error(f"Failed to compile nfqws: {e}")
             sys.exit(1)
     
     def setup_service(self):
@@ -235,6 +295,7 @@ WantedBy=multi-user.target
         self.detect_distro()
         self.backup_firewall()
         self.install_system_dependencies()
+        self.compile_nfqws()
         self.install_python_dependencies()
         self.setup_service()
         
@@ -244,9 +305,9 @@ WantedBy=multi-user.target
         print("=" * 60)
         print()
         print("Next steps:")
-        print("  1. Test: python3 simulate_block.py")
-        print("  2. Start: sudo systemctl start zapret-autonomous")
-        print("  3. Check: sudo systemctl status zapret-autonomous")
+        print("  1. Bypass: sudo python3 zapret-cli.py twitter.com youtube.com")
+        print("  2. Status: sudo python3 zapret-cli.py status")
+        print("  3. Service: sudo systemctl start zapret-autonomous")
         print()
         print(f"Learn more: Check {self.sensei.log_file}")
 
