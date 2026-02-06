@@ -2,7 +2,8 @@
 """
 Zapret CLI - Simple command-line interface for DPI bypass
 Usage:
-    sudo python3 zapret-cli.py bypass site1.com site2.com
+    sudo python3 zapret-cli.py turbo.cr jpg6.su        # Auto-bypass
+    sudo python3 zapret-cli.py bypass site1.com        # Explicit bypass
     sudo python3 zapret-cli.py status
     sudo python3 zapret-cli.py stop
 """
@@ -80,7 +81,6 @@ def cmd_status():
     """Show current bypass status."""
     from core.strategy_applicator import get_applicator
     from core.db import StrategyDB
-    import subprocess
     
     applicator = get_applicator()
     status = applicator.get_status()
@@ -134,13 +134,24 @@ def cmd_test(domains: list):
         except Exception as e:
             print(f"? {domain}: {e}")
 
+def is_domain(arg: str) -> bool:
+    """Check if argument looks like a domain name."""
+    # If it contains a dot and doesn't start with - it's probably a domain
+    return '.' in arg and not arg.startswith('-')
+
 def main():
+    # Smart argument handling: if first arg looks like a domain, assume 'bypass'
+    if len(sys.argv) > 1 and is_domain(sys.argv[1]):
+        # User typed: zapret-cli.py site.com -> convert to: zapret-cli.py bypass site.com
+        sys.argv.insert(1, 'bypass')
+    
     parser = argparse.ArgumentParser(
         description='Zapret Autonomous - DPI Bypass Tool',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  sudo python3 zapret-cli.py bypass twitter.com youtube.com
+  sudo python3 zapret-cli.py twitter.com youtube.com   # Auto-bypass
+  sudo python3 zapret-cli.py bypass twitter.com        # Explicit bypass
   sudo python3 zapret-cli.py status
   sudo python3 zapret-cli.py stop
   python3 zapret-cli.py test twitter.com
