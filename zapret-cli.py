@@ -68,7 +68,7 @@ def cmd_bypass(domains: list, fresh: bool = False):
         
         # Apply the strategy
         print(f"[APPLY] Activating bypass with strategy: {strategy}")
-        if applicator.apply(strategy):
+        if applicator.apply(strategy, [domain]):
             print(f"✓ Bypass ACTIVE for {domain}")
         else:
             print(f"✗ Failed to apply bypass")
