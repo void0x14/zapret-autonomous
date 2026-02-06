@@ -78,29 +78,73 @@ class UniversalBootstrapper:
         except Exception as e:
             logging.warning(f"Could not backup firewall rules: {e}")
     
+    def _is_package_installed(self, package: str) -> bool:
+        """Check if a package is already installed."""
+        import subprocess
+        
+        # For Arch-based systems, use pacman
+        if self.distro.family == 'arch':
+            # Check for exact match first
+            result = subprocess.run(
+                ['pacman', '-Qq', package],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                return True
+            
+            # Check provides (e.g., zlib-ng-compat provides zlib)
+            result = subprocess.run(
+                ['pacman', '-Qq'],
+                capture_output=True, text=True
+            )
+            # For common libs, check if any variant is installed
+            if package in ['zlib', 'libcap', 'libmnl', 'libnetfilter_queue']:
+                for line in result.stdout.split('\n'):
+                    if package.replace('_', '-') in line or package in line:
+                        return True
+            return False
+        
+        # For Debian-based systems
+        elif self.distro.family == 'debian':
+            result = subprocess.run(
+                ['dpkg', '-s', package],
+                capture_output=True, text=True
+            )
+            return result.returncode == 0
+        
+        # For Fedora/RHEL
+        elif self.distro.family == 'fedora':
+            result = subprocess.run(
+                ['rpm', '-q', package],
+                capture_output=True, text=True
+            )
+            return result.returncode == 0
+        
+        return False
+    
     def install_system_dependencies(self):
         """Install system-level dependencies with smart detection."""
         deps = self.SYSTEM_DEPS.get(self.distro.family, self.SYSTEM_DEPS['arch'])
         
-        # Smart detection: Check if binary exists before trying to install package
+        # Smart detection: Check if package/binary exists before trying to install
         filtered_deps = []
         for dep in deps:
             is_satisfied = False
-            # Map packages to binary commands
+            
+            # Check binaries first
             if dep in ['iptables', 'iptables-nft'] and shutil.which('iptables'):
                 is_satisfied = True
             elif dep == 'ipset' and shutil.which('ipset'):
                 is_satisfied = True
             elif dep in ['base-devel', 'build-essential', 'build-base']:
-                # Check for gcc and make
                 if shutil.which('gcc') and shutil.which('make'):
                     is_satisfied = True
-            elif 'libnetfilter' in dep or 'libmnl' in dep or 'zlib' in dep or 'libcap' in dep:
-                # Keep libraries as they are usually needed for building/linking
-                is_satisfied = False
+            else:
+                # Check if package is installed via package manager
+                is_satisfied = self._is_package_installed(dep)
                 
             if is_satisfied:
-                logging.info(f"✓ Requirement '{dep}' already satisfied by existing system binary")
+                logging.info(f"✓ Requirement '{dep}' already satisfied")
             else:
                 filtered_deps.append(dep)
         
