@@ -124,15 +124,46 @@ class UniversalBootstrapper:
             sys.exit(1)
     
     def install_python_dependencies(self):
-        """Install Python dependencies."""
+        """Install Python dependencies with PEP 668 handling."""
         logging.info("Installing Python dependencies...")
+        
+        base_cmd = [sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt']
         
         try:
             import subprocess
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
+            # Try standard installation first
+            subprocess.check_output(base_cmd, stderr=subprocess.STDOUT)
             logging.info("✓ Python dependencies installed")
+        except subprocess.CalledProcessError as e:
+            output = e.output.decode() if e.output else ""
+            
+            # Check for PEP 668: externally-managed-environment
+            if "externally-managed-environment" in output or "PEP 668" in output:
+                logging.warning("Detected externally managed Python environment (PEP 668)")
+                
+                if self.mode in ['god', 'ask']:
+                    if self.mode == 'ask':
+                        response = input("System blocks pip install. Override with --break-system-packages? [y/N]: ")
+                        if response.lower() != 'y':
+                            logging.error("Installation aborted by user due to PEP 668")
+                            sys.exit(1)
+                    
+                    logging.info("Retrying with --break-system-packages...")
+                    try:
+                        subprocess.check_call(base_cmd + ['--break-system-packages'])
+                        logging.info("✓ Python dependencies installed (overridden)")
+                        return
+                    except Exception as err:
+                        logging.error(f"Failed even with override: {err}")
+                        sys.exit(1)
+                else:
+                    logging.error("System blocks pip install. Run in --mode=god or --mode=ask to override.")
+                    sys.exit(1)
+            
+            logging.error(f"Failed to install Python deps: {output}")
+            sys.exit(1)
         except Exception as e:
-            logging.error(f"Failed to install Python deps: {e}")
+            logging.error(f"Unexpected error installing Python deps: {e}")
             sys.exit(1)
     
     def setup_service(self):
