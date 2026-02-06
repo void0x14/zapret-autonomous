@@ -14,7 +14,7 @@ urllib3.disable_warnings()
 from .heuristics import STRATEGIES, PRIORITY_LIST
 from telemetry.stats_tracker import StatsTracker
 
-PROBE_TIMEOUT = 8.0
+PROBE_TIMEOUT = 5.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 NFQWS_PATH = shutil.which('nfqws') or '/usr/bin/nfqws'
 TEST_QUEUE_BASE = 210
@@ -27,64 +27,46 @@ class ParallelProber:
         self.lock = threading.Lock()
         self.enable_telemetry = enable_telemetry
         self.tracker = StatsTracker() if enable_telemetry else None
-        self._resolved_ip = None
-
-    def _resolve_via_doh(self, domain: str) -> Optional[str]:
-        """DoH ile IP çöz (Cloudflare & Google)."""
-        providers = [
-            ("Cloudflare", "https://cloudflare-dns.com/dns-query"),
-            ("Google", "https://dns.google/resolve")
-        ]
         
-        for name, url in providers:
-            try:
-                logging.debug(f"[DoH] {name} ile çözülüyor: {domain}")
-                resp = requests.get(
-                    url,
-                    params={"name": domain, "type": "A"},
-                    headers={"Accept": "application/dns-json"},
-                    timeout=5, verify=False
-                )
-                data = resp.json()
-                if "Answer" in data:
-                    for ans in data["Answer"]:
-                        if ans.get("type") == 1:
-                            ip = ans.get("data")
-                            if ip and not ip.startswith("0.") and ip != "127.0.0.1":
-                                logging.info(f"[DoH] ✓ {name}: {domain} -> {ip}")
-                                return ip
-            except Exception as e:
-                logging.debug(f"[DoH] {name} hata: {e}")
-        return None
+        # TurkNet + NextDNS kullanıcısı için:
+        # Önce sistem DNS'ine güven, sadece zehirlenme varsa DoH yap.
+        self._resolved_ip = self._resolve_domain()
 
     def _resolve_domain(self) -> str:
-        """Domain çözümle - Zehirlenme kontrolü yap."""
-        if self._resolved_ip: return self._resolved_ip
-        
-        # 1. Normal DNS
+        """Sistem DNS'ini kullan. Sadece 0.0.0.0 dönerse Cloudflare DoH dene."""
         try:
+            # 1. Sistem DNS (NextDNS DoT)
             ip = socket.gethostbyname(self.target_domain)
             if not ip.startswith("0.") and ip != "127.0.0.1":
-                self._resolved_ip = ip
+                logging.info(f"[DNS] Sistem Çözümü: {self.target_domain} -> {ip}")
                 return ip
-            logging.warning(f"[DNS] Zehirlenme: {self.target_domain} -> {ip}")
+        except Exception as e:
+            logging.debug(f"[DNS] Sistem hatası: {e}")
+        
+        # 2. Zehirlenme varsa DoH Fallback
+        logging.warning("[DNS] Sistem başarısız/zehirli, DoH deneniyor...")
+        try:
+            resp = requests.get(
+                "https://cloudflare-dns.com/dns-query",
+                params={"name": self.target_domain, "type": "A"},
+                headers={"Accept": "application/dns-json"},
+                timeout=5, verify=False
+            )
+            for ans in resp.json().get("Answer", []):
+                if ans.get("type") == 1:
+                    return ans.get("data")
         except:
             pass
-            
-        # 2. DoH Fallback
-        real_ip = self._resolve_via_doh(self.target_domain)
-        if real_ip:
-            self._resolved_ip = real_ip
-            return real_ip
             
         return self.target_domain
 
     def _test_strategy(self, strategy_key: str, queue_num: int):
         if self.stop_event.is_set(): return
         
-        target_ip = self._resolve_domain()
-        if not target_ip or target_ip.startswith("0."): return
-        
+        # IP kontrolü
+        if not self._resolved_ip or self._resolved_ip.startswith("0."):
+            return
+            
         nfqws_proc = None
         rules_added = False
         
@@ -95,23 +77,28 @@ class ParallelProber:
             # iptables
             add_rule = [
                 'iptables', '-t', 'mangle', '-I', 'OUTPUT',
-                '-p', 'tcp', '--dport', '443', '-d', target_ip,
+                '-p', 'tcp', '--dport', '443', '-d', self._resolved_ip,
                 '-j', 'NFQUEUE', '--queue-num', str(queue_num), '--queue-bypass'
             ]
+            
             if subprocess.run(add_rule, capture_output=True).returncode == 0:
                 rules_added = True
             else:
                 return
 
-            # nfqws (SHLEX FIX)
+            # nfqws start
             cmd = [NFQWS_PATH, f'--qnum={queue_num}'] + shlex.split(strategy_cmd)
             nfqws_proc = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, 
+                start_new_session=True
             )
-            time.sleep(0.5)
+            time.sleep(0.4) # Faster check
             
-            # Test Connection
-            if self._make_request_with_ip(target_ip):
+            if nfqws_proc.poll() is not None:
+                return
+            
+            # Request
+            if self._make_request_with_ip(self._resolved_ip):
                 duration = time.time() - start_time
                 logging.info(f"[{strategy_key}] ✓ BAŞARILI ({duration:.2f}s)")
                 with self.lock:
@@ -121,7 +108,7 @@ class ParallelProber:
             else:
                 pass
                 
-        except Exception:
+        except:
             pass
         finally:
             if nfqws_proc:
@@ -131,28 +118,36 @@ class ParallelProber:
             if rules_added:
                 del_rule = [
                     'iptables', '-t', 'mangle', '-D', 'OUTPUT',
-                    '-p', 'tcp', '--dport', '443', '-d', target_ip,
+                    '-p', 'tcp', '--dport', '443', '-d', self._resolved_ip,
                     '-j', 'NFQUEUE', '--queue-num', str(queue_num), '--queue-bypass'
                 ]
                 subprocess.run(del_rule, capture_output=True)
 
     def _make_request_with_ip(self, ip: str) -> bool:
         try:
+            # TurkNet bazen User-Agent filtering yapabilir mi? Sanmam ama standart tutalım.
             resp = requests.get(
                 f"https://{ip}",
-                headers={"Host": self.target_domain, "User-Agent": USER_AGENT},
+                headers={"Host": self.target_domain, "User-Agent": "curl/7.68.0"},
                 timeout=PROBE_TIMEOUT, verify=False, allow_redirects=True
             )
-            return resp.status_code < 400
+            # 403 Forbidden bile olsa, bağlantı kuruldu demektir (Cloudflare block page)
+            # Bu yüzden status code kontrolünü esnetiyoruz.
+            # TCP bağlantısı kurulduysa ve SSL handshake bittiyse bypass çalışmıştır.
+            return True
+        except requests.exceptions.SSLError:
+            # SSL hatası = DPI Araya girdi (Fail)
+            return False
+        except requests.exceptions.ConnectionError:
+            # Bağlantı koptu = Fail
+            return False
         except:
             return False
 
     def solve(self) -> Optional[str]:
-        logging.info(f"[PROBER] {self.target_domain} için test başlıyor...")
-        if not self._resolve_domain():
-            logging.error("[PROBER] IP çözülemedi!")
-            return None
-            
+        logging.info(f"[PROBER] TurkNet/NextDNS Modu: {self.target_domain}")
+        logging.info(f"[DNS] Hedef IP: {self._resolved_ip}")
+        
         threads = []
         for idx, strategy in enumerate(PRIORITY_LIST):
             queue_num = TEST_QUEUE_BASE + idx
@@ -161,7 +156,7 @@ class ParallelProber:
             threads.append(t)
             
         for t in threads:
-            t.join(timeout=PROBE_TIMEOUT + 2)
+            t.join(timeout=PROBE_TIMEOUT + 1)
             
-        logging.info(f"[PROBER] Sonuç: {self.winner_strategy}")
+        logging.info(f"[PROBER] Kazanan: {self.winner_strategy}")
         return self.winner_strategy
