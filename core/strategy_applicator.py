@@ -48,7 +48,7 @@ class StrategyApplicator:
         
         ports_str = ','.join(map(str, ports))
         
-        # TCP rule for HTTP/HTTPS
+        # TCP rule for HTTP/HTTPS (based on official zapret docs)
         tcp_rule = [
             'iptables', '-t', 'mangle', '-I', 'POSTROUTING',
             '-p', 'tcp', '-m', 'multiport', '--dports', ports_str,
@@ -104,6 +104,8 @@ class StrategyApplicator:
     
     def _start_nfqws(self, strategy_key: str) -> bool:
         """Start nfqws process with the given strategy."""
+        import shlex
+        
         if strategy_key not in STRATEGIES:
             logging.error(f"Unknown strategy: {strategy_key}")
             return False
@@ -114,20 +116,20 @@ class StrategyApplicator:
         
         strategy_cmd = STRATEGIES[strategy_key]["cmd"]
         
-        # Build nfqws command
-        cmd = [
-            NFQWS_PATH,
-            f'--qnum={NFQUEUE_NUM}',
-            strategy_cmd
-        ]
+        # Build nfqws command - properly parse strategy_cmd with shlex
+        base_cmd = [NFQWS_PATH, f'--qnum={NFQUEUE_NUM}']
+        strategy_args = shlex.split(strategy_cmd)
+        cmd = base_cmd + strategy_args
         
         logging.info(f"Starting nfqws with strategy '{strategy_key}': {' '.join(cmd)}")
         
         try:
+            # Start detached from terminal so it keeps running
             self.nfqws_process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True  # Detach from terminal
             )
             self.active_strategy = strategy_key
             logging.info(f"✓ nfqws started (PID: {self.nfqws_process.pid})")

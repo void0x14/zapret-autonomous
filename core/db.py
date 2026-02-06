@@ -51,3 +51,12 @@ class StrategyDB:
             conn.commit()
             conn.close()
             logging.info(f"Saved strategy for {domain}: {strategy}")
+
+    def delete_strategy(self, domain: str):
+        """Delete a saved strategy for a domain."""
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM domains WHERE domain = ?", (domain,))
+            conn.commit()
+            conn.close()
