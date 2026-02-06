@@ -6,6 +6,8 @@ import sys
 import os
 import logging
 import argparse
+import time
+import shutil
 from installer.distro_detector import DistroDetector
 from installer.package_manager import PackageManager
 from installer.sensei_logger import SenseiLogger
@@ -18,7 +20,7 @@ logging.basicConfig(
 
 class UniversalBootstrapper:
     SYSTEM_DEPS = {
-        'arch': ['libnetfilter_queue', 'iptables', 'ipset'],
+        'arch': ['libnetfilter_queue', 'iptables-nft', 'ipset'],
         'debian': ['libnetfilter-queue-dev', 'libnetfilter-queue1', 'iptables', 'ipset'],
         'fedora': ['libnetfilter_queue-devel', 'iptables', 'ipset'],
         'alpine': ['libnetfilter_queue-dev', 'iptables', 'ipset'],
@@ -54,25 +56,69 @@ class UniversalBootstrapper:
         
         self.pkg_mgr = PackageManager(self.distro.install_cmd, self.mode)
     
+    def backup_firewall(self):
+        """Backup existing firewall rules."""
+        logging.info("Backing up existing firewall rules...")
+        backup_dir = 'tmp/firewall_backups'
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        timestamp = int(time.time())
+        try:
+            # iptables backup
+            if shutil.which('iptables-save'):
+                with open(f"{backup_dir}/iptables_{timestamp}.bak", "w") as f:
+                    import subprocess
+                    subprocess.run(["iptables-save"], stdout=f)
+            # nftables backup
+            if shutil.which('nft'):
+                with open(f"{backup_dir}/nftables_{timestamp}.bak", "w") as f:
+                    import subprocess
+                    subprocess.run(["nft", "list", "ruleset"], stdout=f)
+            logging.info(f"✓ Firewall rules backed up to {backup_dir}")
+        except Exception as e:
+            logging.warning(f"Could not backup firewall rules: {e}")
+    
     def install_system_dependencies(self):
-        """Install system-level dependencies."""
+        """Install system-level dependencies with smart detection."""
         deps = self.SYSTEM_DEPS.get(self.distro.family, self.SYSTEM_DEPS['arch'])
         
-        logging.info(f"Installing system dependencies: {', '.join(deps)}")
-        
+        # Smart detection: Check if binary exists before trying to install package
+        filtered_deps = []
         for dep in deps:
+            is_satisfied = False
+            # Map packages to binary commands
+            if dep in ['iptables', 'iptables-nft'] and shutil.which('iptables'):
+                is_satisfied = True
+            elif dep == 'ipset' and shutil.which('ipset'):
+                is_satisfied = True
+            elif 'libnetfilter' in dep:
+                # Keep libraries as they are usually needed for building/linking
+                is_satisfied = False
+                
+            if is_satisfied:
+                logging.info(f"✓ Requirement '{dep}' already satisfied by existing system binary")
+            else:
+                filtered_deps.append(dep)
+        
+        if not filtered_deps:
+            logging.info("✓ All system dependencies are already satisfied")
+            return
+
+        logging.info(f"Installing missing system dependencies: {', '.join(filtered_deps)}")
+        
+        for dep in filtered_deps:
             self.sensei.log_package_install(
                 package=dep,
                 purpose=f"Required for packet manipulation and DPI bypass"
             )
         
         if self.mode == 'ask':
-            response = input(f"Install {len(deps)} packages? [Y/n]: ")
+            response = input(f"Install {len(filtered_deps)} packages? [Y/n]: ")
             if response.lower() == 'n':
                 logging.info("Installation cancelled by user")
                 sys.exit(0)
         
-        success = self.pkg_mgr.install(deps)
+        success = self.pkg_mgr.install(filtered_deps)
         if not success:
             logging.error("Failed to install system dependencies")
             sys.exit(1)
@@ -156,6 +202,7 @@ WantedBy=multi-user.target
         
         self.check_root()
         self.detect_distro()
+        self.backup_firewall()
         self.install_system_dependencies()
         self.install_python_dependencies()
         self.setup_service()

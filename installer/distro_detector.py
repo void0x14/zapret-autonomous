@@ -19,7 +19,7 @@ class DistroDetector:
         'arch': {
             'keywords': ['arch', 'cachy', 'manjaro', 'endeavour'],
             'pkg_manager': 'pacman',
-            'install_cmd': 'pacman -S --noconfirm'
+            'install_cmd': 'pacman -S --noconfirm --ask=4'
         },
         'debian': {
             'keywords': ['debian', 'ubuntu', 'mint', 'pop'],
