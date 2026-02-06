@@ -29,6 +29,16 @@ class StrategyApplicator:
         # Cleanup on exit - Critical for removing iptables rules
         atexit.register(self.stop)
     
+    def is_active(self) -> bool:
+        """Check if bypass is currently active (process running)."""
+        if self.current_process is None:
+            return False
+        if self.current_process.poll() is not None:
+            # Process bitmiş/çökmüş
+            self.current_process = None
+            return False
+        return True
+
     def apply(self, strategy_key: str, domains: List[str]) -> bool:
         """Apply a specific strategy for the given domains."""
         self.stop()  # Clean up existing processes/rules first
