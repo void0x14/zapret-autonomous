@@ -1,12 +1,11 @@
 """
 Strategy Applicator - The Real Deal
-Applies iptables rules and spawns nfqws process to actually bypass DPI
+Applies iptables rules and spawns nfqws process to actually bypass DPI.
+Implements Singleton pattern for global access.
 """
 import subprocess
 import shutil
 import logging
-import os
-import signal
 import atexit
 import shlex
 import socket
@@ -19,17 +18,20 @@ NFQUEUE_NUM = 200
 NFQWS_PATH = shutil.which('nfqws') or '/usr/bin/nfqws'
 
 class StrategyApplicator:
-    """Manages iptables rules and nfqws process for actual DPI bypass."""
+    """
+    Manages iptables rules and nfqws process for actual DPI bypass.
+    Should be used as a Singleton via get_applicator().
+    """
     
     def __init__(self):
         self.current_process = None
         self.applied_rules = []
-        # Cleanup on exit
+        # Cleanup on exit - Critical for removing iptables rules
         atexit.register(self.stop)
     
     def apply(self, strategy_key: str, domains: List[str]) -> bool:
         """Apply a specific strategy for the given domains."""
-        self.stop()  # Clean up existing
+        self.stop()  # Clean up existing processes/rules first
         
         logging.info(f"Applying strategy: {strategy_key} for {len(domains)} domains")
         
@@ -45,13 +47,13 @@ class StrategyApplicator:
         return True
     
     def stop(self):
-        """Stop current bypass (kill nfqws, remove rules)."""
+        """Stop current bypass (kill nfqws, remove rules). Safe to call multiple times."""
         if self.current_process:
             logging.info("Stopping nfqws...")
             self.current_process.terminate()
             try:
                 self.current_process.wait(timeout=2)
-            except:
+            except subprocess.TimeoutExpired:
                 self.current_process.kill()
             self.current_process = None
             logging.info("✓ nfqws stopped")
@@ -59,24 +61,25 @@ class StrategyApplicator:
         self._cleanup_iptables()
 
     def _cleanup_iptables(self):
-        """Remove all applied iptables rules."""
+        """Remove all applied iptables rules in reverse order."""
         if self.applied_rules:
             logging.info("Removing iptables rules...")
             for rule in reversed(self.applied_rules):
-                subprocess.run(['iptables', '-t', 'mangle', '-D'] + rule, capture_output=True)
+                # Suppress output during cleanup
+                subprocess.run(['iptables', '-t', 'mangle', '-D'] + rule, 
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.applied_rules = []
             
-            # Flush queue just in case
-            subprocess.run(['iptables', '-t', 'mangle', '-D', 'POSTROUTING', 
-                          '-p', 'tcp', '-m', 'multiport', '--dports', '80,443',
-                          '-m', 'connbytes', '--connbytes-dir=original', '--connbytes-mode=packets', '--connbytes', '1:6',
-                          '-m', 'mark', '!', '--mark', '0x40000000/0x40000000',
+            # Flush specific queue rule just in case (Safety net)
+            subprocess.run(['iptables', '-t', 'mangle', '-D', 'OUTPUT', 
+                          '-p', 'tcp', '--dport', '443',
                           '-j', 'NFQUEUE', '--queue-num', str(NFQUEUE_NUM), '--queue-bypass'], 
-                          capture_output=True)
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             logging.info("✓ IPTables rules removed")
 
     def _resolve_ip(self, domain: str) -> Optional[str]:
-        """Resolve IP with DoH fallback."""
+        """Resolve IP. Priorities: System DNS > DoH Fallback."""
+        # 1. System DNS (Trusting user's NextDNS/DoT setup)
         try:
             ip = socket.gethostbyname(domain)
             if not ip.startswith("0.") and ip != "127.0.0.1":
@@ -84,7 +87,7 @@ class StrategyApplicator:
         except:
             pass
             
-        # DoH Fallback (Cloudflare)
+        # 2. DoH Fallback (Cloudflare) - Only if system DNS fails
         try:
             resp = requests.get(
                 "https://cloudflare-dns.com/dns-query",
@@ -92,25 +95,20 @@ class StrategyApplicator:
                 headers={"Accept": "application/dns-json"},
                 timeout=5, verify=False
             )
-            for ans in resp.json().get("Answer", []):
-                if ans.get("type") == 1:
-                    return ans.get("data")
+            data = resp.json()
+            if "Answer" in data:
+                for ans in data["Answer"]:
+                    if ans.get("type") == 1: # A record
+                        return ans.get("data")
         except:
             pass
         return None
 
     def _apply_iptables(self, domains: List[str]) -> bool:
-        """Apply NFQUEUE rules for target domains."""
+        """Apply NFQUEUE rules for target domains using OUTPUT chain."""
         try:
-            # 1. Genel kural (POSTROUTING)
-            # Bu kural tüm 80/443 trafiğini yakalamaz, sadece OUTPUT kurallarıyla eşleşenleri yakalamak için
-            # Ancak zapret genellikle POSTROUTING'de genel bir hook ister.
-            # Biz spesifik domain çalıştığımız için OUTPUT chain kullanacağız.
-            
-            # Öncelikle nfqws'in kendisine loop yapmasını engellemek için MARK kontrolü ekliyoruz.
-            
             for domain in domains:
-                # Resolve IP (DoH supported)
+                # Resolve IP
                 ip = self._resolve_ip(domain)
                 if not ip:
                     logging.warning(f"Could not resolve {domain}, skipping iptables rule")
@@ -119,7 +117,7 @@ class StrategyApplicator:
                 logging.info(f"Adding rule for {domain} -> {ip}")
                 
                 # Rule: OUTPUT chain for specific destination IP
-                # -p tcp --dport 443 -d <IP> -j NFQUEUE --queue-num 200
+                # This captures traffic generated by local processes (browsers)
                 rule = [
                     'OUTPUT',
                     '-p', 'tcp', '--dport', '443',
@@ -154,9 +152,19 @@ class StrategyApplicator:
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True # Detach from terminal
+                start_new_session=True # Detach from terminal to prevent signal propagation
             )
             return True
         except Exception as e:
             logging.error(f"Failed to start nfqws: {e}")
             return False
+
+# Global instance for Singleton pattern
+_applicator_instance = None
+
+def get_applicator() -> StrategyApplicator:
+    """Get the singleton StrategyApplicator instance."""
+    global _applicator_instance
+    if _applicator_instance is None:
+        _applicator_instance = StrategyApplicator()
+    return _applicator_instance
