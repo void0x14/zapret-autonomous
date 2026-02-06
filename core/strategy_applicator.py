@@ -26,8 +26,8 @@ class StrategyApplicator:
     def __init__(self):
         self.current_process = None
         self.applied_rules = []
-        # Cleanup on exit - Critical for removing iptables rules
-        atexit.register(self.stop)
+        # NOT using atexit - nfqws should persist after script exits
+        # User will manually call 'zapret-cli.py stop' to cleanup
     
     def is_active(self) -> bool:
         """Check if bypass is currently active (process running)."""

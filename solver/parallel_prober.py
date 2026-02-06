@@ -106,10 +106,10 @@ class ParallelProber:
                         self.winner_strategy = strategy_key
                         self.stop_event.set()
             else:
-                pass
+                logging.debug(f"[{strategy_key}] ✗ Request failed")
                 
-        except:
-            pass
+        except Exception as e:
+            logging.debug(f"[{strategy_key}] Exception: {e}")
         finally:
             if nfqws_proc:
                 nfqws_proc.terminate()
