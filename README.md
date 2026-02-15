@@ -7,9 +7,6 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux-green.svg)](#requirements)
 [![Status](https://img.shields.io/badge/Status-Alpha-orange.svg)](#roadmap)
 
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
-![Platform](https://img.shields.io/badge/Platform-Linux-green.svg)
-
 ---
 
 ## 🚀 Quick Start
