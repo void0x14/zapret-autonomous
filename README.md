@@ -1,17 +1,11 @@
+# ZAPRET AUTONOMOUS
 
-```
-███████╗ █████╗ ██████╗ ██████╗ ███████╗████████╗    █████╗ ██╗   ██╗████████╗
-╚══███╔╝██╔══██╗██╔══██╗██╔══██╗██╔════╝╚══██╔══╝   ██╔══██╗██║   ██║╚══██╔══╝
-  ███╔╝ ███████║██████╔╝██████╔╝█████╗     ██║      ███████║██║   ██║   ██║   
- ███╔╝  ██╔══██║██╔═══╝ ██╔══██╗██╔══╝     ██║      ██╔══██║██║   ██║   ██║   
-███████╗██║  ██║██║     ██║  ██║███████╗   ██║      ██║  ██║╚██████╔╝   ██║   
-╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝╚══════╝   ╚═╝      ╚═╝  ╚═╝ ╚═════╝    ╚═╝   
-                                                           
-        🤖 A U T O N O M O U S   E D I T I O N 
-```
+> **Intelligent, Zero-Configuration DPI Bypass for Linux**  
+> *Autonomous detection. Real-time strategy selection. Seamless connectivity.*
 
-> **Autonomous DPI Bypass for Linux**  
-> *Zero configuration. Auto-detection. Real bypass.*
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.txt)
+[![Platform](https://img.shields.io/badge/Platform-Linux-green.svg)](#requirements)
+[![Status](https://img.shields.io/badge/Status-Alpha-orange.svg)](#roadmap)
 
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux-green.svg)
@@ -151,38 +145,54 @@ zapret-autonomous/
 
 ## ⚠️ Requirements
 
-- Linux (Debian/Ubuntu/Arch/Fedora)
-- Root access (for iptables)
-- `nfqws` binary (installed by setup.py)
-- Python 3.8+
-- `requests`, `netfilterqueue`, `scapy` (installed by setup.py)
+- **OS**: Linux (Arch, Debian/Ubuntu, Fedora, OpenWrt)
+- **Privileges**: Root access (required for `iptables` and NFQUEUE manipulation)
+- **Kernel**: Version 4.19+ with `netfilter` support
+- **Dependencies**: 
+  - `nfqws` / `tpws` binaries (provisioned by `setup.py`)
+  - Python 3.8+
+  - Modules: `requests`, `netfilterqueue`, `scapy`
 
 ---
 
-## 🔍 Troubleshooting
+## 🔍 Troubleshooting & Verification
 
-### "nfqws not found"
-```bash
-sudo python3 setup.py --mode=god
-```
+### Common Failure Points
 
-### "Permission denied"
-Run with sudo:
-```bash
-sudo python3 zapret-cli.py bypass twitter.com
-```
+1.  **`nfqws` Path Errors**:
+    The prober expects `nfqws` to be in the `../bin` directory relative to the core or in your system `PATH`. If `setup.py` was interrupted, verify binary existence in the `files` directory.
+    
+2.  **Database Locking (`sqlite3.OperationalError`)**:
+    High-concurrency probing can occasionally cause database locks. The system implements a retry mechanism, but if persistent errors occur, manually clear the database:
+    ```bash
+    rm strategies.db
+    # The system will recreate it on next run
+    ```
 
-### "No working strategy found"
-The site might use a different blocking method. Try:
-1. Check if the domain resolves: `dig twitter.com`
-2. Try different DNS: `1.1.1.1` or `8.8.8.8`
-3. The block might be IP-based (zapret can't help with that)
+3.  **NFQUEUE Conflict**:
+    By default, this tool uses NFQUEUE number `1`. If another firewall service is using queue `1`, packets will be dropped or ignored. Ensure no other `zapret` or concurrent bypass tools are active.
 
-### "Connection still times out"
-After running bypass, if the site still doesn't work:
-1. Check status: `sudo python3 zapret-cli.py status`
-2. Clear browser cache
-3. Try a different browser/incognito mode
+4.  **ISP IP-Level Blocking**:
+    If a site is blocked by IP address rather than hostname (SNI), packet manipulation alone will not work. In these cases, a VPN or Proxy is required.
+
+---
+
+## 🗺️ Roadmap
+
+### Phase 1: Stability & Core (Current)
+- [x] Autonomous strategy probing and persistence.
+- [x] Systemd integration for persistent operation.
+- [x] Multi-distro support (Arch, Debian, Fedora).
+
+### Phase 2: Intelligence & Optimization
+- [ ] **Heuristic Refinement**: Improve detection of "fake" HTTP responses and TLS resets.
+- [ ] **Asynchronous Strategy Engine**: Transition from threaded probing to `asyncio` for lower resource overhead.
+- [ ] **DB Resilience**: Replace raw SQLite with a more robust connection pooling or WAL mode for high concurrency.
+
+### Phase 3: Observability & Scaling
+- [ ] **Web Dashboard**: Real-time visualization of bypassed domains and strategy effectiveness.
+- [ ] **Prometheus Exporter**: Export metrics for Grafana monitoring.
+- [ ] **Cloud-Sync Strategies**: Share anonymized working strategies across nodes to reduce per-client probing time.
 
 ---
 
